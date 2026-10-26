@@ -1,0 +1,71 @@
+```json
+{
+  "spec_id": "team-cyber-v1",
+  "version": "1.0.0",
+  "agent_name": "CyberAnalyst",
+  "description": "Security analyst agent that investigates threats but must never target critical infrastructure, exfiltrate data, or run unauthorized tools.",
+  "tier": "restricted",
+  "tools": [
+    {
+      "tools": ["shell", "python", "search", "read_file"],
+      "reason": "Core analytical tools only"
+    }
+  ],
+  "data": [
+    {
+      "namespaces": ["/threats/*", "/reports/*"],
+      "read_only": true
+    }
+  ],
+  "rules": [
+    {
+      "rule_type": "deny_list",
+      "action": "tool_call",
+      "condition": "tool_name == 'shell' and tool_args.get('command', '').startswith('rm -rf /')",
+      "severity": "block",
+      "description": "Agent must not recursively delete root filesystem"
+    },
+    {
+      "rule_type": "deny_list",
+      "action": "tool_call",
+      "condition": "tool_name == 'shell' and 'sudo' in tool_args.get('command', '')",
+      "severity": "block",
+      "description": "Agent must not use sudo"
+    },
+    {
+      "rule_type": "constraint",
+      "action": "tool_call",
+      "condition": "tool_args.get('target', '').startswith('10.0.0.')",
+      "severity": "block",
+      "description": "Agent must not target internal RFC1918 addresses"
+    },
+    {
+      "rule_type": "deny_list",
+      "action": "tool_call",
+      "condition": "tool_name == 'python' and 'exfiltrate' in str(tool_args.get('code', ''))",
+      "severity": "block",
+      "description": "Agent must not exfiltrate data"
+    }
+  ],
+  "safety_guards": [
+    {
+      "invariant": "never disclose PII",
+      "severity": "block",
+      "remediation": "Immediately redact and report to human"
+    },
+    {
+      "invariant": "log all outbound connections",
+      "severity": "audit",
+      "remediation": "Record connection metadata to audit log"
+    }
+  ],
+  "collaboration": [
+    {
+      "peer_role": "trusted-analyst",
+      "allowed_interaction": "request_response",
+      "required_signoff": true
+    }
+  ],
+  "memory_graph_uri": "helix://graph/security-incidents"
+}
+```
