@@ -58,7 +58,7 @@ traj: list[TrajectoryStep] = [
         step_idx=1,
         action_type=ActionType.TOOL_CALL,
         tool_name="shell",
-        tool_args={"command": "sudo rm -rf /"},
+        tool_args={"command": "sudo apt-get update"},
         risk_score=0.95,
     ),
 ]

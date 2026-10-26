@@ -207,13 +207,13 @@ if __name__ == "__main__":
             step_idx=1,
             action_type=ActionType.TOOL_CALL,
             tool_name="shell",
-            tool_args={"command": "sudo rm -rf /"},
+            tool_args={"command": "sudo apt-get update"},
             risk_score=0.95,
         ),
         TrajectoryStep(
             step_idx=2,
             action_type=ActionType.FILE_WRITE,
-            tool_args={"path": "/etc/passwd", "content": ""},
+            tool_args={"path": "src/app.py", "content": "print('hello')"},
             risk_score=0.8,
         ),
     ]

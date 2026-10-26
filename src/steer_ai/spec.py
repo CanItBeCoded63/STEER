@@ -49,6 +49,123 @@ class RuleType(str, Enum):
     COLLABORATION = "collaboration"
 
 
+# --- Safe expression evaluator (no eval/exec) -------------------------------
+
+import ast
+import operator
+
+
+_ALLOWED_BINOPS: dict[type, object] = {
+    ast.Add: operator.add,
+    ast.Sub: operator.sub,
+    ast.Mult: operator.mul,
+    ast.Div: operator.truediv,
+    ast.Mod: operator.mod,
+    ast.Pow: operator.pow,
+    ast.Eq: operator.eq,
+    ast.NotEq: operator.ne,
+    ast.Lt: operator.lt,
+    ast.LtE: operator.le,
+    ast.Gt: operator.gt,
+    ast.GtE: operator.ge,
+    ast.And: operator.and_,
+    ast.Or: operator.or_,
+    ast.In: lambda a, b: a in b,
+    ast.NotIn: lambda a, b: a not in b,
+}
+
+_ALLOWED_UNARYOPS: dict[type, object] = {
+    ast.UAdd: operator.pos,
+    ast.USub: operator.neg,
+    ast.Not: operator.not_,
+}
+
+_ALLOWED_CALLABLES: dict[str, object] = {
+    "str.startswith": lambda s, p: s.startswith(p),
+    "str.endswith": lambda s, p: s.endswith(p),
+    "str.lower": lambda s: s.lower(),
+    "str.upper": lambda s: s.upper(),
+    "str.contains": lambda s, p: p in s,
+    "dict.get": lambda d, k, default=None: d.get(k, default),
+}
+
+
+def _safe_eval(expr: str, env: dict[str, Any]) -> Any:
+    """Evaluate a whitelisted expression against *env*.
+
+    Only a restricted subset of Python expressions is permitted:
+    arithmetic, comparisons, boolean logic, membership tests, and
+    attribute access on a small set of safe callables.  Everything
+    else raises ``TypeError``.
+    """
+    tree = ast.parse(expr.strip(), mode="eval")
+    return _eval_node(tree.body, env)
+
+
+def _eval_node(node: ast.AST, env: dict[str, Any]) -> Any:
+    if isinstance(node, ast.Expression):
+        return _eval_node(node.value, env)
+    if isinstance(node, ast.BoolOp):
+        values = [_eval_node(v, env) for v in node.values]
+        if isinstance(node.op, ast.And):
+            return all(values)
+        return any(values)
+    if isinstance(node, ast.BinOp):
+        left = _eval_node(node.left, env)
+        right = _eval_node(node.right, env)
+        op = _ALLOWED_BINOPS.get(type(node.op))
+        if op is None:
+            raise TypeError(f"Unsupported binary operator: {type(node.op).__name__}")
+        return op(left, right)
+    if isinstance(node, ast.UnaryOp):
+        operand = _eval_node(node.operand, env)
+        op = _ALLOWED_UNARYOPS.get(type(node.op))
+        if op is None:
+            raise TypeError(f"Unsupported unary operator: {type(node.op).__name__}")
+        return op(operand)
+    if isinstance(node, ast.Compare):
+        left = _eval_node(node.left, env)
+        for op, comparator in zip(node.ops, node.comparators):
+            right = _eval_node(comparator, env)
+            cmp_op = _ALLOWED_BINOPS.get(type(op))
+            if cmp_op is None:
+                raise TypeError(f"Unsupported comparison: {type(op).__name__}")
+            if not cmp_op(left, right):
+                return False
+            left = right
+        return True
+    if isinstance(node, ast.Call):
+        func = _eval_node(node.func, env)
+        args = [_eval_node(a, env) for a in node.args]
+        if not callable(func):
+            raise TypeError("Called object is not callable")
+        return func(*args)
+    if isinstance(node, ast.Attribute):
+        value = _eval_node(node.value, env)
+        # Only allow attribute access on safe callables
+        if isinstance(value, type):
+            name = f"{value.__name__}.{node.attr}"
+            if name in _ALLOWED_CALLABLES:
+                return _ALLOWED_CALLABLES[name]
+            raise TypeError(f"Attribute access not allowed: {name}")
+        if isinstance(value, dict):
+            return value.get(node.attr)
+        raise TypeError("Attribute access only allowed on dicts")
+    if isinstance(node, ast.Name):
+        if node.id in env:
+            return env[node.id]
+        raise NameError(f"Name '{node.id}' is not defined")
+    if isinstance(node, ast.Constant):
+        return node.value
+    if isinstance(node, ast.List):
+        return [_eval_node(e, env) for e in node.elts]
+    if isinstance(node, ast.Tuple):
+        return tuple(_eval_node(e, env) for e in node.elts)
+    if isinstance(node, ast.Dict):
+        return {_eval_node(k, env): _eval_node(v, env) for k, v in zip(node.keys, node.values)}
+    raise TypeError(f"Unsupported expression node: {type(node).__name__}")
+
+
 @dataclass(frozen=True)
 class Rule:
     """A single constraint in an agent's behavior contract."""
@@ -60,14 +177,20 @@ class Rule:
     allowed_values: list[str] | None = None
 
     def matches(self, step: "TrajectoryStep") -> bool:
-        """True if *step* satisfies the rule's condition."""
-        # Minimal evaluator — real implementation uses a safe expr parser
+        """True if *step* satisfies the rule's condition.
+
+        Uses a sandboxed AST-based evaluator (no ``eval``/``exec``) that
+        whitelists a safe subset of Python expressions: comparisons,
+        boolean logic, membership tests, and a small set of safe
+        callables (``str.startswith``, ``str.endswith``, ``str.lower``,
+        ``str.upper``, ``str.contains``, ``dict.get``).
+        """
         env = step.as_dict()
         try:
-            # condition examples:  "tool_name == 'shell'", "risk_score > 0.8"
-            return bool(eval(self.condition, {"__builtins__": {}}, env))  # noqa: S307
+            return bool(_safe_eval(self.condition, env))
         except Exception:
-            return True  # fail-open during evaluation; log separately
+            # Fail-open during evaluation; log separately
+            return True
 
 
 class ToolAllowRule(BaseModel):
